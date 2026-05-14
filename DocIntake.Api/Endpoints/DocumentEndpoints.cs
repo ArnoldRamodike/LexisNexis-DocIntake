@@ -13,16 +13,31 @@ public static class DocumentEndpoints
         var apiGroup = app.MapGroup("/api/");
         // POST /documents
         apiGroup.MapPost("documents", async (
-            [FromForm] SubmissionRequest request,
+            [FromForm] string? provider,
+            [FromForm] string? sourceDocumentId,
+            [FromForm] string? title,
+            [FromForm] string? jurisdiction,
+            [FromForm] string? categories,
+            [FromForm] string? tags,
+            [FromForm] DateTime? receivedAt,
+            IFormFile? file,
             IMetadataStore store,
             IBlobStorageService blobStorage,
             IQueueService queue) =>
         {
-            if (request.File is null || request.File.Length == 0)
-                return Results.BadRequest("File is required.");
+            if (file is null || file.Length == 0)
+                return Results.BadRequest(new { error = "File is required." });
+            if (string.IsNullOrWhiteSpace(provider))
+                return Results.BadRequest(new { error = "Provider is required." });
+            if (string.IsNullOrWhiteSpace(sourceDocumentId))
+                return Results.BadRequest(new { error = "SourceDocumentId is required." });
+            if (string.IsNullOrWhiteSpace(title))
+                return Results.BadRequest(new { error = "Title is required." });
+            if (string.IsNullOrWhiteSpace(jurisdiction))
+                return Results.BadRequest(new { error = "Jurisdiction is required." });
 
             // Dedup check
-            var existingId = store.GetExistingId(request.Provider, request.SourceDocumentId);
+            var existingId = store.GetExistingId(provider, sourceDocumentId);
             if (existingId is not null && store.TryGet(existingId, out var existingDoc))
             {
                 // Duplicate submission – just return existing
@@ -32,16 +47,16 @@ public static class DocumentEndpoints
             // Create new document record
             var doc = new DocumentEntity
             {
-                Provider = request.Provider,
-                SourceDocumentId = request.SourceDocumentId,
-                Title = request.Title,
-                Jurisdiction = request.Jurisdiction,
-                Categories = request.Categories?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() ?? new(),
-                Tags = request.Tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() ?? new(),
-                ReceivedAt = request.ReceivedAt ?? DateTime.UtcNow,
-                ContentType = request.File.ContentType,
-                FileName = request.File.FileName,
-                BlobName = $"{Guid.NewGuid()}/{request.File.FileName}"
+                Provider = provider,
+                SourceDocumentId = sourceDocumentId,
+                Title = title,
+                Jurisdiction = jurisdiction,
+                Categories = categories?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() ?? new(),
+                Tags = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList() ?? new(),
+                ReceivedAt = receivedAt ?? DateTime.UtcNow,
+                ContentType = file.ContentType,
+                FileName = file.FileName,
+                BlobName = $"{Guid.NewGuid()}/{file.FileName}"
             };
 
             // Audit: received
@@ -53,7 +68,7 @@ public static class DocumentEndpoints
             });
 
             // Store raw file
-            using var stream = request.File.OpenReadStream();
+            using var stream = file.OpenReadStream();
             await blobStorage.UploadAsync(doc.BlobName, stream, doc.ContentType);
             doc.AuditTrail.Add(new StatusEvent
             {
@@ -65,6 +80,15 @@ public static class DocumentEndpoints
             // Persist metadata (handles dedup finally)
             doc = store.AddOrGetExisting(doc);
 
+            // Audit: queued (before enqueue to avoid race with background processor)
+            doc.AuditTrail.Add(new StatusEvent
+            {
+                Status = "queued",
+                Timestamp = DateTime.UtcNow,
+                Message = "Queued for processing"
+            });
+            store.Update(doc);
+
             // Enqueue processing message
             var processMsg = new ProcessMessage
             {
@@ -74,13 +98,6 @@ public static class DocumentEndpoints
                 SubmittedAt = DateTime.UtcNow
             };
             await queue.EnqueueAsync(processMsg);
-            doc.AuditTrail.Add(new StatusEvent
-            {
-                Status = "queued",
-                Timestamp = DateTime.UtcNow,
-                Message = "Queued for processing"
-            });
-            store.Update(doc);
 
             return Results.Created($"/documents/{doc.Id}", MapToDto(doc));
         }).DisableAntiforgery(); // for form file uploads in development

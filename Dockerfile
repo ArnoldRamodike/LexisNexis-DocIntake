@@ -2,6 +2,7 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /
 COPY *.sln .
 COPY DocIntake.Api/*.csproj DocIntake.Api/
+COPY DocIntake.Tests/*.csproj DocIntake.Tests/
 RUN dotnet restore
 COPY . .
 RUN dotnet publish DocIntake.Api/DocIntake.Api.csproj -c Release -o /app

@@ -10,7 +10,6 @@ builder.Services.AddSwaggerGen();
 // Register services
 builder.Services.AddSingleton<IMetadataStore, InMemoryMetadataStore>();
 builder.Services.AddSingleton<IQueueService, InMemoryQueueService>();
-builder.Services.AddSingleton<IBlobStorageService, BlobStorageService>();
 builder.Services.AddSingleton<IBlobStorageService, InMemoryBlobStorageService>();
 builder.Services.AddHostedService<DocumentProcessor>();
 
